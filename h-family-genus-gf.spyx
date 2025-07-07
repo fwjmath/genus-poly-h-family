@@ -1,0 +1,875 @@
+# ****************************************************************************
+#       Copyright (C) 2025 Wenjie Fang <fwjmath@gmail.com>,
+#
+#  Distributed under the terms of the GNU General Public License (GPL)
+#  as published by the Free Software Foundation; either version 2 of
+#  the License, or (at your option) any later version.
+#                  https://www.gnu.org/licenses/
+# ****************************************************************************
+
+import time
+from sage.rings.polynomial.polynomial_ring_constructor import PolynomialRing
+from sage.rings.power_series_ring import PowerSeriesRing
+from sage.rings.polynomial.laurent_polynomial_ring import LaurentPolynomialRing
+from sage.combinat.permutation import CyclicPermutations, Permutation, Permutations
+from sage.groups.perm_gps.permgroup_named import SymmetricGroup
+from sage.rings.integer_ring import IntegerRing
+from sage.combinat.permutation import from_cycles
+from sage.arith.misc import CRT_list, random_prime
+from sage.rings.finite_rings.finite_field_prime_modn import FiniteField_prime_modn
+from sage.misc.functional import symbolic_prod
+from sage.misc.mrange import cartesian_product_iterator
+from sage.matrix.special import identity_matrix
+from sage.matrix.constructor import matrix
+
+ZZ = IntegerRing()
+Rx = PolynomialRing(ZZ, 'x')  # for genus
+x = Rx.gen()
+Rtx = PowerSeriesRing(Rx, 't')  # for size
+t = Rtx.gen()
+Polytx = PolynomialRing(Rx, t)
+Fractx = Polytx.fraction_field()
+
+
+def get_deg_seq(G, n):
+    '''
+    Returns a list storing the degree of each node
+    '''
+    degseq = [0] * n
+    for (a, b) in G:
+        degseq[a] += 1
+        degseq[b] += 1
+    return degseq
+
+
+def get_dart_indices(G, n):
+    '''
+    Returns the starting index of darts associated to each node.
+    '''
+    curflag = [1] * n
+    degseq = get_deg_seq(G, n)
+    for i in range(1, n):
+        curflag[i] = curflag[i - 1] + degseq[i - 1]
+    return curflag
+
+
+def get_edge_perm_list(G, n):
+    '''
+    Returns the involution without fixed point for the given graph, as a list
+    of pairs
+    '''
+    pl = []
+    # compute starting half-edge indices
+    dartidx = get_dart_indices(G, n)
+    # construct the list
+    for e in G:
+        darts = []
+        for i in range(2):
+            dart = dartidx[e[i]]
+            dartidx[e[i]] += 1
+            darts.append(dart)
+        pl.append(tuple(darts))
+    return pl
+
+
+def compute_graph_genus_poly(G, n):
+    '''
+    Compute the genus polynomial of the given graph G with n nodes.
+    '''
+    m = len(G)  # number of edges
+    # compute the permutation for edges
+    edgeperm = from_cycles(2 * m, get_edge_perm_list(G, n))
+    # get the needed information
+    degseq = get_deg_seq(G, n)
+    dartidx = get_dart_indices(G, n)
+    # construct cycles for each node
+    cycsets = [CyclicPermutations(range(dartidx[i], dartidx[i] + degseq[i]))
+               for i in range(n)]
+    # cartesian product of everyone
+    accu = [0] * (m - n + 2)
+    for cycles in cartesian_product_iterator(cycsets):
+        nodeperm = from_cycles(2 * m, cycles)
+        accu[m - n - (nodeperm * edgeperm).cycle_type().length() + 2] += 1
+    return sum([accu[a] * t ** a for a in range(m - n + 2)])
+
+
+def compute_face_element_proj(G, n, vl):
+    '''
+    Compute the face element of the given graph, blown-up at a given list of
+    nodes, restricted to the darts of those nodes.
+
+    The result is given as a dictionary with face permutation as key and the
+    polynomial (monomial in this case) as value, along with a list of the list
+    of darts associated to each one of the nodes.
+    '''
+    m = len(G)  # number of edges
+    # get the needed information
+    degseq = get_deg_seq(G, n)
+    dartidx = get_dart_indices(G, n)
+    # construct cycles for each node, distinguishing those node whose
+    # permutation we keep, excluding the kept vertices
+    cycsets = [CyclicPermutations(range(dartidx[i], dartidx[i] + degseq[i]))
+               for i in range(n) if i not in vl]
+    cycsets = [list(iter) for iter in cycsets]
+    # construct the group algebra that we are working with
+    partialelem = [e for i in vl
+                   for e in range(dartidx[i], dartidx[i] + degseq[i])]
+    PSG = SymmetricGroup(partialelem)
+    # compute the permutation for edges
+    edgeperm = from_cycles(2 * m, get_edge_perm_list(G, n))
+    # product then projection of everyone
+    accufinal = {}
+    for cycles in cartesian_product_iterator(cycsets):
+        nodeperm = from_cycles(2 * m, cycles)
+        faceperm = Permutation(edgeperm * nodeperm).cycle_tuples()
+        # count faces involving only darts not in the list
+        facecnt = len(tuple(1 for f in faceperm
+                            if all((i not in partialelem) for i in f)))
+        # projection for permutation
+        faceperm = tuple(tuple(i for i in f if i in partialelem)
+                         for f in faceperm)
+        faceperm = tuple(f for f in faceperm if f)
+        faceperm = PSG(faceperm)
+        if faceperm not in accufinal:
+            accufinal[faceperm] = 0
+        accufinal[faceperm] += Rx.monomial(facecnt)
+    return accufinal, [list(range(dartidx[i], dartidx[i] + degseq[i]))
+                       for i in vl]
+
+
+def perm_proj(perm, PSG):
+    '''
+    Project a permutation into the domain given by PSG by ignoring elements
+    that are not in the domain in the cycle notation
+    '''
+    domain = PSG.domain()
+    # count faces involving only darts not in the list
+    facecnt = len(tuple(1 for f in perm.cycle_tuples(singletons=True)
+                        if all((i not in domain) for i in f)))
+    return (PSG(tuple(tuple(i for i in f if i in domain)
+                      for f in perm.cycle_tuples(singletons=True))),
+            Rx.monomial(facecnt))
+
+
+def perm_proj_opt(perm, PSG, domain):
+    '''
+    Project a permutation into the domain given by PSG by ignoring elements
+    that are not in the domain in the cycle notation
+    '''
+    # count faces involving only darts not in the list
+    facecnt = len(tuple(1 for f in perm.cycle_tuples(singletons=True)
+                        if all((i not in domain) for i in f)))
+    return (PSG(tuple(tuple(i for i in e if i in domain)
+                      for e in perm.cycle_tuples(singletons=True))),
+            Rx.monomial(facecnt))
+
+
+def group_alg_proj(algelem, domain):
+    '''
+    Same as perm_proj, but works on group algebra
+    '''
+    PSG = SymmetricGroup(domain)
+    accu = {}
+    for perm, val in algelem.items():
+        pproj, power = perm_proj_opt(perm, PSG, domain)
+        if pproj not in accu:
+            accu[pproj] = 0
+        accu[pproj] += power * val
+    return accu
+
+
+def standardize_domain_alg(algelem, domain_shift):
+    '''
+    Change the domain of the given element in group algebra to be on a different
+    range
+
+    Return the element with the domain normalized, and a dictionary translating
+    the elements of the old domain to those in the new one.
+    '''
+    for e in algelem:
+        olddomain = list(e.parent().domain())
+        break
+    ddict = {}
+    for i in range(len(olddomain)):
+        ddict[olddomain[i]] = i + domain_shift
+    PSG = SymmetricGroup(range(domain_shift, domain_shift + len(olddomain)))
+    accu = {}
+    for perm, val in algelem.items():
+        newperm = PSG(tuple(tuple(ddict[i] for i in c)
+                      for c in perm.cycle_tuples()))
+        accu[newperm] = val  # no conflict is possible here
+    return accu, ddict
+
+
+def multiply_algelem(elem1, elem2):
+    '''
+    Compute the product of two element in group algebras, which may have
+    different support.
+
+    The result is thus supported on the union of the supports
+    '''
+    # extraction of domains, and computing the new domain
+    dom1, dom2 = [], []
+    for e in elem1:
+        dom1 = list(e.parent().domain())
+        break
+    for e in elem2:
+        dom2 = list(e.parent().domain())
+        break
+    dom = dom1 + dom2
+    PSG = SymmetricGroup(dom)
+    # do the product, one by one
+    accu = {}
+    elem1 = {PSG(e): v for e, v in elem1.items()}
+    elem2 = {PSG(e): v for e, v in elem2.items()}
+    for e1, v1 in elem1.items():
+        for e2, v2 in elem2.items():
+            e = e1 * e2
+            if e not in accu:
+                accu[e] = 0
+            accu[e] += v1 * v2
+    return accu
+
+
+def vertex_amalgamation(eG, eH, vG, vH):
+    '''
+    Computes the face element of the vertex amalgamation of G and H, given as
+    face elements.
+
+    More precisely, we suppose that eG (resp. eH) is the face element of the
+    blow-up of G (resp. H) at vertices in vG (resp. vH).
+
+    We assume that vG and vH are of the same length, and we will fusion vertices
+    in these orders. We also automatically project the element obtained out of
+    the darts in the fusioned vertices
+
+    Alongside with the face element, we also return a dictionary on the darts
+    *that are not merged*.
+    '''
+    if len(vG) != len(vH):
+        raise ValueError("Not the same number of vertices in the two graphs")
+    # standardize everything
+    eG, ddictG = standardize_domain_alg(eG, 1)
+    eH, ddictH = standardize_domain_alg(eH, max(ddictG.values()) + 1)
+    # compute the full domain
+    if ddictH:
+        fulldom = [i + 1 for i in range(max(ddictH.values()))]
+    elif ddictG:
+        # for the case of H empty used to undo blow-up
+        fulldom = [i + 1 for i in range(max(ddictG.values()))]
+    else:
+        fulldom = []  # really, nothing is left?
+    vGnew = [[ddictG[n] for n in node] for node in vG]
+    vHnew = [[ddictH[n] for n in node] for node in vH]
+    # we only need to keep non-fusioned darts
+    for node in vG:
+        for n in node:
+            ddictG.pop(n)
+    for node in vH:
+        for n in node:
+            ddictH.pop(n)
+    vG, vH = vGnew, vHnew
+    # compute the reduced domain
+    fdarts = [i for node in vG for i in node] + [i for node in vH for i in node]
+    reddom = [i for i in fulldom if i not in fdarts]
+    # compute the darts of fusioned vertices
+    vfusion = [vG[i] + vH[i] for i in range(len(vG))]
+    # preparation
+    PSG = SymmetricGroup(fulldom)
+    PSGred = SymmetricGroup(reddom)
+    eG = {PSG(e): v for e, v in eG.items()}
+    eH = {PSG(e): v for e, v in eH.items()}
+    accu = {}
+    cycsets = [CyclicPermutations(node) for node in vfusion]
+    # iterate over the elements in \mathbb{C}_{U}
+    for nodecyc in cartesian_product_iterator(cycsets):
+        # PSG only accept collection of tuples
+        cu = PSG([tuple(cyc) for cyc in nodecyc])
+        for elemG, valG in eG.items():
+            tmp = cu * elemG
+            for elemH, valH in eH.items():
+                res, face = perm_proj_opt(tmp * elemH, PSGred, reddom)
+                if res not in accu:
+                    accu[res] = 0
+                accu[res] += face * valG * valH
+    return accu, ddictG, ddictH
+
+
+def undo_blowup_face_element(eG, vG):
+    '''
+    We assume that all darts are bound after undoing the blow-up
+    '''
+    return vertex_amalgamation(eG, {SymmetricGroup([])(): 1}, vG,
+                               [[] for _ in vG])[0][SymmetricGroup([])()]
+
+
+def linear_face_poly_iter(H, n, U1, U2):
+    '''
+    An iterator that compute the face polynomial of a H-circular family, given
+    by the following parameters:
+
+    - pair H and n (number of vertices)
+    - k as number of repetitions of the same pattern
+    - U1 and U2 as gluing (from U1 to U2)
+    '''
+    # some sanity checks
+    # same size and no intersection
+    if len(U1) != len(U2) or len(set(U1 + U2)) != len(U1) * 2:
+        raise ValueError('Specification of gluing incorrect')
+    # compute the elementary brick of blowup of H
+    blowupH, vblowupH = compute_face_element_proj(H, n, U1 + U2)
+    vU1, vU2 = vblowupH[:len(U1)], vblowupH[len(U1):]
+    # start iteration
+    curG, curU1, curU2 = blowupH, vU1, vU2
+    yield 1
+    yield undo_blowup_face_element(curG, curU1 + curU2)
+    while True:
+        # do amalgamation
+        curG, ddictG, ddictH = vertex_amalgamation(curG, blowupH, curU1, vU2)
+        # rename darts using the dictionary
+        curU2 = [[ddictG[n] for n in node] for node in curU2]
+        curU1 = [[ddictH[n] for n in node] for node in vU1]
+        yield undo_blowup_face_element(curG, curU1 + curU2)
+    return
+
+
+def linear_face_poly_list(H, n, U1, U2, k):
+    '''
+    Compute the face polynomial of a H-circular family, given by the following
+    parameters:
+
+    - pair H and n (number of vertices)
+    - k as number of repetitions of the same pattern
+    - U1 and U2 as gluing (from U1 to U2)
+    '''
+    accu = []
+    iter = linear_face_poly_iter(H, n, U1, U2)
+    for _ in range(k + 1):
+        accu.append(next(iter))
+    return accu
+
+
+def circular_face_poly_iter(H, n, U1, U2):
+    '''
+    An iterator that computes the face polynomial of a H-circular family, given
+    by the following parameters:
+
+    - pair H and n (number of vertices)
+    - k as number of repetitions of the same pattern
+    - U1 and U2 as gluing (from U1 to U2)
+    '''
+    # some sanity checks
+    # same size and no intersection
+    if len(U1) != len(U2) or len(set(U1 + U2)) != len(U1) * 2:
+        raise ValueError('Specification of gluing incorrect')
+    # compute the elementary brick of blowup of H
+    blowupH, vblowupH = compute_face_element_proj(H, n, U1 + U2)
+    vU1, vU2 = vblowupH[:len(U1)], vblowupH[len(U1):]
+    # start iteration
+    curG, curU1, curU2 = blowupH, vU1, vU2
+    yield 1
+    yield undo_blowup_face_element(curG,
+                                   [curU1[i] + curU2[i]
+                                    for i in range(len(curU1))])
+    while True:
+        # do amalgamation
+        curG, ddictG, ddictH = vertex_amalgamation(curG, blowupH, curU1, vU2)
+        # rename darts using the dictionary
+        curU2 = [[ddictG[n] for n in node] for node in curU2]
+        curU1 = [[ddictH[n] for n in node] for node in vU1]
+        yield undo_blowup_face_element(curG,
+                                       [curU1[i] + curU2[i]
+                                        for i in range(len(curU1))])
+    return
+
+
+def circular_face_poly_list(H, n, U1, U2, k):
+    '''
+    Computes the face polynomial of a H-circular family, given by the following
+    parameters:
+
+    - pair H and n (number of vertices)
+    - k as number of repetitions of the same pattern
+    - U1 and U2 as gluing (from U1 to U2)
+    '''
+    accu = []
+    iter = circular_face_poly_iter(H, n, U1, U2)
+    for _ in range(k + 1):
+        accu.append(next(iter))
+    return accu
+
+
+def dict_to_cycles(d):
+    '''
+    Auxiliary function. Converts a dictionary representing a permutation of
+    arbitrary domain into a cycle representation.
+
+    Note that the dictionary is consumed after the conversion.
+    '''
+    accu = []
+    while d:
+        # pick an arbitrary element
+        start = 0
+        for elem in d:
+            start = elem
+            break
+        # find the cycle
+        cycle = [start]
+        nextelem = d[start]
+        while nextelem != start:
+            cycle.append(nextelem)
+            nextelem = d[nextelem]
+        accu.append(tuple(cycle))
+        # remove the elements in the cycle
+        for e in cycle:
+            d.pop(e)
+    return accu
+
+
+def H_family_det(H, n, U1, U2):
+    '''
+    Compute the determinant of the matrix related to H-linear and H-circular
+    families, always counting faces
+    '''
+    if len(U1) != len(U2):
+        raise ValueError("Not the same number of vertices in the two graphs")
+    # compute the face element of H
+    eH, Ulist = compute_face_element_proj(H, n, U1 + U2)
+    U1, U2 = Ulist[:len(U1)], Ulist[len(U1):]
+    # standardize everything
+    _,  ddictG = standardize_domain_alg(eH, 1)
+    eH, ddictH = standardize_domain_alg(eH, max(ddictG.values()) + 1)
+    U1G = [[ddictG[n] for n in node] for node in U1]
+    U1H = [[ddictH[n] for n in node] for node in U1]
+    U2G = [[ddictG[n] for n in node] for node in U2]
+    U2H = [[ddictH[n] for n in node] for node in U2]
+    # compute the domains
+    fulldom = [i + ZZ(1) for i in range(max(ddictH.values()))]
+    reddom = [n for node in U1H + U2G for n in node]
+    # preparation
+    PSG = SymmetricGroup(fulldom)
+    PSGred = SymmetricGroup(reddom)
+    eH = {PSG(e): v for e, v in eH.items()}
+    dartsG = [n for node in U1G + U2G for n in node]
+    U1G_to_U1H = {ddictG[n]: ddictH[n] for node in U1 for n in node}
+    accu = {}
+    vfusion = [U1G[i] + U2H[i] for i in range(len(U1G))]
+    cycsets = [CyclicPermutations(node) for node in vfusion]
+    # iterate over elements in \mathbb{C}_{U}
+    for nodecyc in cartesian_product_iterator(cycsets):
+        # PSG only accept collection of tuples
+        cu = PSG([tuple(cyc) for cyc in nodecyc])
+        for elemGp in Permutations(dartsG):
+            elemG = PSG(dict_to_cycles({dartsG[i]: elemGp[i]
+                                        for i in range(len(reddom))}))
+            elemGproj = PSGred(tuple(tuple((U1G_to_U1H[n]
+                                            if n in U1G_to_U1H else n)
+                                     for n in cyc)
+                               for cyc in elemG.cycle_tuples()))
+            if elemGproj not in accu:
+                accu[elemGproj] = {}
+            tmp = cu * elemG
+            for elemH, valH in eH.items():
+                res, face = perm_proj_opt(tmp * elemH, PSGred, reddom)
+                if res not in accu[elemGproj]:
+                    accu[elemGproj][res] = 0
+                accu[elemGproj][res] += face * valH
+    # now convert to a matrix and compute
+    elemlist = [PSGred(dict_to_cycles({reddom[i]: elem[i]
+                                      for i in range(len(reddom))}))
+                for elem in Permutations(reddom)]
+    elemcnt = len(elemlist)
+    elemdict = {elemlist[i]: i for i in range(len(elemlist))}
+    coeffdict = {}
+    for e1 in accu:
+        idx1 = elemdict[e1]
+        for e2 in accu[e1]:
+            coeffdict[(idx1, elemdict[e2])] = accu[e1][e2]
+    m = identity_matrix(Fractx, elemcnt)
+    m -= matrix(Fractx, elemcnt, elemcnt, coeffdict) * Fractx(t)
+    # we only have polynomial coefficients here, and df is division-free
+    return m.determinant(algorithm='df').numerator()
+
+
+def H_linear_gf(H, n, U1, U2):
+    '''
+    Compute the face generating function of a given H-linear family using the
+    determinant.
+    '''
+    # constant for the gap
+    GAPLEN = 5
+    # first compute the determinant
+    det = H_family_det(H, n, U1, U2)
+    detdeg = det.degree()
+    # then compute the first terms of the gf
+    polylist = linear_face_poly_list(H, n, U1, U2, detdeg + GAPLEN)
+    polyfirst = sum(polylist[i] * t ** i for i in range(1, len(polylist)))
+    numer = det * Polytx(polyfirst)
+    # find the gap in the numerator
+    degs = set(x for x in numer.dict().keys())
+    gap = set(range(1, max(degs) + 1)) - degs
+    if len(gap) < GAPLEN:
+        raise ValueError('Surprising error occured, not having the correct gap')
+    maxdeg = min(gap)
+    numerdict = numer.dict()
+    numer = sum(Fractx(t) ** i * numerdict[i] for i in numerdict if i < maxdeg)
+    return numer / det
+
+
+def H_circular_gf(H, n, U1, U2):
+    '''
+    Compute the face generating function of a given H-linear family using the
+    determinant.
+    '''
+    # constant for the gap
+    GAPLEN = 5
+    # first compute the determinant
+    det = H_family_det(H, n, U1, U2)
+    detdeg = det.degree()
+    # then compute the first terms of the gf
+    polylist = circular_face_poly_list(H, n, U1, U2, detdeg + GAPLEN)
+    polyfirst = sum(polylist[i] * t ** i for i in range(1, len(polylist)))
+    numer = det * Polytx(polyfirst)
+    # find the gap in the numerator
+    degs = set(x for x in numer.dict().keys())
+    gap = set(range(1, max(degs) + 1)) - degs
+    if len(gap) < GAPLEN:
+        raise ValueError('Surprising error occured, not having the correct gap')
+    maxdeg = min(gap)
+    numerdict = numer.dict()
+    numer = sum(Fractx(t) ** i * numerdict[i] for i in numerdict if i < maxdeg)
+    return numer / det
+
+
+def fast_pade(polylistmod, deg_estimate, degnumer, degdenom, PSeries, PFrac):
+    '''
+    Perform a faster Padé approximation using interpolation
+    '''
+    xvals = []
+    numervals = []
+    denomvals = []
+    PPoly = polylistmod[0].parent()
+    for i in range(deg_estimate):
+        randx = PPoly.base().random_element()
+        while randx in xvals:
+            randx = PPoly.base().random_element()
+        xvals.append(randx)
+        pointres = sum(polylistmod[i].substitute(x=randx) * PSeries(t) ** i
+                       for i in range(1, len(polylistmod)))
+        paderes = pointres.pade(deg_estimate, deg_estimate)
+        padenumer, padedenom = paderes.numerator(), paderes.denominator()
+        cst = padedenom.constant_coefficient().inverse()
+        numervals.append((padenumer * cst).coefficients(sparse=False))
+        denomvals.append((padedenom * cst).coefficients(sparse=False))
+    valcnt = len(xvals)
+    ndegpoly = [PPoly.lagrange_polynomial([(xvals[i], numervals[i][ndeg])
+                                           for i in range(valcnt)],
+                                          algorithm='neville')
+                for ndeg in range(degnumer + 1)]
+    ddegpoly = [PPoly.lagrange_polynomial([(xvals[i], denomvals[i][ddeg])
+                                           for i in range(valcnt)],
+                                          algorithm='neville')
+                for ddeg in range(degdenom + 1)]
+    while True:  # denominator seems ok, but the numerator does not converge
+        randx = PPoly.base().random_element()
+        while randx in xvals:
+            randx = PPoly.base().random_element()
+        xvals.append(randx)
+        pointres = sum(polylistmod[i].substitute(x=randx) * PSeries(t) ** i
+                       for i in range(1, len(polylistmod)))
+        paderes = pointres.pade(deg_estimate, deg_estimate)
+        padenumer, padedenom = paderes.numerator(), paderes.denominator()
+        cst = padedenom.constant_coefficient().inverse()
+        numervals.append((padenumer * cst).coefficients(sparse=False))
+        denomvals.append((padedenom * cst).coefficients(sparse=False))
+        valcnt += 1
+        Flag = True
+        numerpoly, denompoly = 0, 0
+        for ndeg in range(degnumer + 1):
+            ndegpoly[ndeg] = PPoly.lagrange_polynomial([(xvals[i], numervals[i][ndeg])
+                                                        for i in range(valcnt)],
+                                                       algorithm='neville',
+                                                       previous_row=ndegpoly[ndeg])
+            if ndegpoly[ndeg][-1].degree() >= valcnt - 2:
+                Flag = False
+                break
+            numerpoly += ndegpoly[ndeg][-1] * PSeries(t) ** ndeg
+        for ddeg in range(degdenom + 1):
+            ddegpoly[ddeg] = PPoly.lagrange_polynomial([(xvals[i], denomvals[i][ddeg])
+                                                        for i in range(valcnt)],
+                                                       algorithm='neville',
+                                                       previous_row=ddegpoly[ddeg])
+            if ddegpoly[ddeg][-1].degree() >= valcnt - 2:
+                Flag = False
+                break
+            denompoly += ddegpoly[ddeg][-1] * PSeries(t) ** ddeg
+        if Flag:
+            break
+    return PFrac(numerpoly) / PFrac(denompoly)
+
+
+def pade_heuristic(H, n, U1, U2, polyiter):
+    '''
+    Compute the face generating function of the H-circular or H-linear family
+    using Padé's approximation, depending on the iterator given.
+
+    This algorithm is as follows:
+
+    - We first determine the likely degrees of numerator and denominator with
+      a prime modulo;
+    - Then we perform the Padé approximation using the CRT, because it is much
+      faster:
+        - We add a prime modulo and compute the Padé approximation;
+            - Here we use the `fast_pade` function that uses Lagrange
+              interpolation to accelerate.
+        - We use CRT to compute the coefficients of the numerator and the
+          denominator;
+        - We iterate until the coefficients stablize.
+    '''
+    deg_estimate = 8
+    deg_increment = 1
+    GAPLEN = 2
+    polylist = []
+    polyiter = polyiter(H, n, U1, U2)  # we use a lazy way to avoid recomputing
+    starttime = time.time()
+    print('Estimation phase')
+    while True:
+        # compute the first terms of the gf
+        polytime = time.time()  # time spent on computing terms of series
+        while len(polylist) <= deg_estimate * 2 + GAPLEN:
+            polylist.append(next(polyiter))
+            if len(polylist) < 21:
+                print(f'Series terms count: {len(polylist)}, '
+                      f'time elapsed {time.time() - starttime}')
+        print(f'Series terms count: {len(polylist)}, '
+              f'time elapsed {time.time() - starttime}')
+        polytime = time.time() - polytime
+        # do the modulo reduction
+        p = random_prime(2 ** 62, lbound=2 ** 61)
+        PPoly = PolynomialRing(FiniteField_prime_modn(p), x)
+        PFrac = PolynomialRing(PPoly, t).fraction_field()
+        PSeries = PowerSeriesRing(PPoly, t)
+        polylistmod = [PPoly(e) for e in polylist]
+        # pade for the modulo
+        padetime = time.time()  # time spent on pade approximation
+        randx = PPoly.base().random_element()
+        pointmod = sum(polylistmod[i].substitute(x=randx) * PSeries(t) ** i
+                       for i in range(1, len(polylistmod)))
+        pademod = pointmod.pade(deg_estimate, deg_estimate)
+        degnumer = pademod.numerator().degree()
+        degdenom = pademod.denominator().degree()
+        if not (degnumer >= deg_estimate or degdenom >= deg_estimate):
+            pademod = fast_pade(polylistmod, deg_estimate, degnumer, degdenom,
+                                PSeries, PFrac)
+        padetime = time.time() - padetime
+        # when spending too much time on pade approximation,
+        # better to compute a few more terms before redoing it
+        if polytime < padetime * 8:
+            deg_increment += 1
+        degnumer = pademod.numerator().degree()
+        degdenom = pademod.denominator().degree()
+        if degnumer >= deg_estimate or degdenom >= deg_estimate:
+            print(f'Degrees: numerator {degnumer}, denominator {degdenom}, '
+                  f'estimate {deg_estimate}, time {padetime}. '
+                  f'Not enough gap, restart.')
+            deg_estimate += deg_increment
+        else:
+            print(f'Degrees: numerator {degnumer}, denominator {degdenom}, '
+                  f'estimate {deg_estimate}, time {padetime}. '
+                  f'Enough gap, start full approximation by CRT.')
+            break
+    # now use Chinese remainder theorem to accelerate computation
+    # to save time, first get the previous result
+    print(f'Prime modulo: {p}')
+    plist = [p]
+    # we need to keep the constant term of the denominator to 1
+    normalize = pademod.denominator().truncate(1).inverse()
+    numerdict = {(i, j): ZZ(val * normalize)
+                 for i, poly in pademod.numerator().dict().items()
+                 for j, val in poly.dict().items()}
+    numer_resdict = {p: [e] for p, e in numerdict.items()}
+    denomdict = {(i, j): ZZ(val * normalize)
+                 for i, poly in pademod.denominator().dict().items()
+                 for j, val in poly.dict().items()}
+    denom_resdict = {p: [e] for p, e in denomdict.items()}
+    while True:
+        # get a new modulo and compute
+        p = random_prime(2 ** 62, lbound=2 ** 61)
+        print(f'Prime modulo: {p}')
+        while p in plist:
+            p = random_prime(2 ** 62, lbound=2 ** 61)
+        plist.append(p)
+        pprod = symbolic_prod(plist)
+        pprodx = symbolic_prod(plist[:-1])
+        PPoly = PolynomialRing(FiniteField_prime_modn(p), x)
+        PFrac = PolynomialRing(PPoly, t).fraction_field()
+        PSeries = PowerSeriesRing(PPoly, t)
+        polylistmod = [PPoly(e) for e in polylist]
+        pademod = fast_pade(polylistmod, deg_estimate, degnumer, degdenom,
+                            PSeries, PFrac)
+        normalize = pademod.denominator().truncate(1).inverse()
+        flag = False
+        for i, poly in pademod.numerator().dict().items():
+            # any KeyError is simply bad chance...
+            for j, val in poly.dict().items():
+                numer_resdict[(i, j)].append(ZZ(val * normalize))
+                coeff = CRT_list(numer_resdict[(i, j)], plist)
+                # we take care of both positive and negative coefficients
+                if (
+                    coeff != numerdict[(i, j)]
+                    and pprod - coeff != pprodx - numerdict[(i, j)]
+                ):
+                    flag = True
+                numerdict[(i, j)] = coeff
+        for i, poly in pademod.denominator().dict().items():
+            # any KeyError is simply bad chance...
+            for j, val in poly.dict().items():
+                denom_resdict[(i, j)].append(ZZ(val * normalize))
+                coeff = CRT_list(denom_resdict[(i, j)], plist)
+                # we take care of both positive and negative coefficients
+                if (
+                    coeff != denomdict[(i, j)]
+                    and pprod - coeff != pprodx - denomdict[(i, j)]
+                ):
+                    flag = True
+                denomdict[(i, j)] = coeff
+        if not flag:  # we stop when adding a new prime does not change anything
+            break
+    # convert negative coefficients
+    for key in denomdict:
+        if denomdict[key] * 2 > pprod:
+            denomdict[key] -= pprod
+    for key in numerdict:
+        if numerdict[key] * 2 > pprod:
+            numerdict[key] -= pprod
+    numer = sum(Fractx(t) ** i * Rx.monomial(j) * numerdict[(i, j)]
+                for (i, j) in numerdict)
+    denom = sum(Fractx(t) ** i * Rx.monomial(j) * denomdict[(i, j)]
+                for (i, j) in denomdict)
+    print(f'Total time: {time.time() - starttime}')
+    return numer, denom
+
+
+def pade_heuristic_linear(H, n, U1, U2):
+    '''
+    Compute the face generating function of the H-linear family.
+
+    A thin wrapper of `pade_heuristic`
+    '''
+    return pade_heuristic(H, n, U1, U2, linear_face_poly_iter)
+
+
+def pade_heuristic_circular(H, n, U1, U2):
+    '''
+    Compute the face generating function of the H-circular family.
+
+    A thin wrapper of `pade_heuristic`
+    '''
+    return pade_heuristic(H, n, U1, U2, circular_face_poly_iter)
+
+
+def H_family_genus_gf(H, n, U1, U2, ftype, algorithm='pade'):
+    '''
+    Returns the H-linear or the H-circular genus generating function of the
+    given graph and gluing.
+
+    The gluing is given by identifying each pair of vertices in `U1` and `U2`
+    with the same length.
+
+    We offer two algorithms:
+
+    - 'pade', which computes the first terms and then do optimized Padé's
+      approximation for the generating function.
+    - 'det', which computes the denominator explicitly, then use the first
+      terms for the numerator.
+
+    Both algorithms contains some heuristics, but 'det' assumes less and thus
+    more reliable, while also taking more time.
+
+    INPUT:
+
+    - `H`: The graph given as a list of edges (pairs of integers from 0 to
+      `n` - 1)
+    - `n`: The number of vertices. The vertices are presented as numbers from 0
+      to `n` - 1.
+    - `U1`: A list of vertices
+    - `U2`: A list of vertices of the same length as `U1`.
+    - `algorithm`: The algorithm to use, either 'pade' by default for using
+      Padé's approximation, or 'det' with the determinant
+    '''
+    def half_power(poly):
+        accu = 0
+        tt = poly.parent().gen()
+        for tpow, xpoly in poly.dict().items():
+            xaccu = 0
+            xx = xpoly.parent().gen()
+            for xpow, xcoeff in xpoly.dict().items():
+                if xpow % 2 != 0:
+                    print(poly)
+                    raise ValueError('Odd power, not possible to half it')
+                xaccu += xx ** (xpow // 2) * xcoeff
+            accu += tt ** tpow * xaccu
+        return accu
+
+    edgecnt = len(H)
+    Ucnt = len(U1)
+    numer, denom, extrapow = 0, 0, 0
+    if ftype == 'linear':
+        extrapow = -Ucnt
+        if algorithm == 'pade':
+            numer, denom = pade_heuristic_linear(H, n, U1, U2)
+        elif algorithm == 'det':
+            res = H_linear_gf(H, n, U1, U2)
+            numer, denom = res.numerator(), res.denominator()
+        else:
+            raise ValueError('Invalid algorithm')
+    elif ftype == 'circular':
+        extrapow = 0
+        if algorithm == 'pade':
+            numer, denom = pade_heuristic_circular(H, n, U1, U2)
+        elif algorithm == 'det':
+            res = H_circular_gf(H, n, U1, U2)
+            numer, denom = res.numerator(), res.denominator()
+        else:
+            raise ValueError('Invalid algorithm')
+    else:
+        raise ValueError('Invalid family type')
+    # first we work with x^{1/2} to avoid fractional powers
+    # Laurent polynomials are needed to express negative coefficients
+    LRx = LaurentPolynomialRing(ZZ, x)
+    PolyLRtx = PolynomialRing(Rx, t)
+    FracLRtx = PolyLRtx.fraction_field()
+    numer, denom = PolyLRtx(numer), PolyLRtx(denom)
+    numer = numer.substitute(x=1 / LRx(x), t=t * x ** (edgecnt - n + Ucnt))
+    numer *= LRx(x) ** (2 + extrapow)
+    denom = denom.substitute(x=1 / LRx(x), t=t * x ** (edgecnt - n + Ucnt))
+    res = FracLRtx(numer) / FracLRtx(denom)
+    numer, denom = res.numerator(), res.denominator()
+    # maybe there are negative powers
+    minval_numer = min(poly.valuation() for poly in numer.coefficients())
+    minval_denom = min(poly.valuation() for poly in denom.coefficients())
+    minval = min(minval_numer, minval_denom)
+    numer *= x ** (-minval)
+    denom *= x ** (-minval)
+    numer, denom = Polytx(numer), Polytx(denom)
+    # now powers in x are positive, but we cannot half the power in general
+    # ugly hack
+    return half_power(numer), half_power(denom)
+
+
+def H_linear_genus_gf(H, n, U1, U2, algorithm='pade'):
+    '''
+    Returns H-linear genus generating function of the given graph and gluing.
+
+    A thin wrapper of `H_family_genus_gf`.
+    '''
+    return H_family_genus_gf(H, n, U1, U2, 'linear', algorithm)
+
+
+def H_circular_genus_gf(H, n, U1, U2, algorithm='pade'):
+    '''
+    Returns H-circular genus generating function of the given graph and gluing.
+
+    A thin wrapper of `H_family_genus_gf`.
+    '''
+    return H_family_genus_gf(H, n, U1, U2, 'circular', algorithm)
