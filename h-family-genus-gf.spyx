@@ -541,7 +541,7 @@ def H_circular_gf(H, n, U1, U2):
     return numer / det
 
 
-def fast_pade(polylistmod, deg_estimate, degnumer, degdenom, PSeries, PFrac):
+def fast_pade(polylistmod, deg_estimate, degnumer, degdenom, PSeries):
     '''
     Perform a faster Padé approximation using interpolation
     '''
@@ -605,7 +605,7 @@ def fast_pade(polylistmod, deg_estimate, degnumer, degdenom, PSeries, PFrac):
             denompoly += ddegpoly[ddeg][-1] * PSeries(t) ** ddeg
         if Flag:
             break
-    return PFrac(numerpoly) / PFrac(denompoly)
+    return numerpoly, denompoly
 
 
 def pade_heuristic(H, n, U1, U2, polyiter):
@@ -660,14 +660,14 @@ def pade_heuristic(H, n, U1, U2, polyiter):
         degdenom = pademod.denominator().degree()
         if not (degnumer >= deg_estimate or degdenom >= deg_estimate):
             pademod = fast_pade(polylistmod, deg_estimate, degnumer, degdenom,
-                                PSeries, PFrac)
+                                PSeries)
+            degnumer = pademod[0].degree()
+            degdenom = pademod[1].degree()
         padetime = time.time() - padetime
         # when spending too much time on pade approximation,
         # better to compute a few more terms before redoing it
         if polytime < padetime * 8:
             deg_increment += 1
-        degnumer = pademod.numerator().degree()
-        degdenom = pademod.denominator().degree()
         if degnumer >= deg_estimate or degdenom >= deg_estimate:
             print(f'Degrees: numerator {degnumer}, denominator {degdenom}, '
                   f'estimate {deg_estimate}, time {padetime}. '
@@ -683,13 +683,13 @@ def pade_heuristic(H, n, U1, U2, polyiter):
     print(f'Prime modulo: {p}')
     plist = [p]
     # we need to keep the constant term of the denominator to 1
-    normalize = pademod.denominator().truncate(1).inverse()
+    normalize = pademod[1].truncate(1).inverse()
     numerdict = {(i, j): ZZ(val * normalize)
-                 for i, poly in pademod.numerator().dict().items()
+                 for i, poly in pademod[0].dict().items()
                  for j, val in poly.dict().items()}
     numer_resdict = {p: [e] for p, e in numerdict.items()}
     denomdict = {(i, j): ZZ(val * normalize)
-                 for i, poly in pademod.denominator().dict().items()
+                 for i, poly in pademod[1].dict().items()
                  for j, val in poly.dict().items()}
     denom_resdict = {p: [e] for p, e in denomdict.items()}
     while True:
@@ -706,10 +706,10 @@ def pade_heuristic(H, n, U1, U2, polyiter):
         PSeries = PowerSeriesRing(PPoly, t)
         polylistmod = [PPoly(e) for e in polylist]
         pademod = fast_pade(polylistmod, deg_estimate, degnumer, degdenom,
-                            PSeries, PFrac)
-        normalize = pademod.denominator().truncate(1).inverse()
+                            PSeries)
+        normalize = pademod[1].truncate(1).inverse()
         flag = False
-        for i, poly in pademod.numerator().dict().items():
+        for i, poly in pademod[0].dict().items():
             # any KeyError is simply bad chance...
             for j, val in poly.dict().items():
                 numer_resdict[(i, j)].append(ZZ(val * normalize))
@@ -721,7 +721,7 @@ def pade_heuristic(H, n, U1, U2, polyiter):
                 ):
                     flag = True
                 numerdict[(i, j)] = coeff
-        for i, poly in pademod.denominator().dict().items():
+        for i, poly in pademod[1].dict().items():
             # any KeyError is simply bad chance...
             for j, val in poly.dict().items():
                 denom_resdict[(i, j)].append(ZZ(val * normalize))
