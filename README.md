@@ -15,3 +15,4 @@ For the Sagemath module `h-family-genus-gf.spyx`, one only need to load it with 
 
 - `H_linear_genus_gf`: computes the genus generating function of H-linear families
 - `H_circular_genus_gf`: the same for H-circular families
+- `apped_H_linear_genus_gf`: the same for capped H-linear families, which is obtained from capping each gluing set of vertices by a graph (thus two caps). This is motivated by the computation of the genus generating function of grid graphs.

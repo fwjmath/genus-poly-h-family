@@ -305,11 +305,10 @@ def undo_blowup_face_element(eG, vG):
 
 def linear_face_poly_iter(H, n, U1, U2):
     '''
-    An iterator that compute the face polynomial of a H-circular family, given
+    An iterator that compute the face polynomial of a H-linear family, given
     by the following parameters:
 
     - pair H and n (number of vertices)
-    - k as number of repetitions of the same pattern
     - U1 and U2 as gluing (from U1 to U2)
     '''
     # some sanity checks
@@ -335,7 +334,7 @@ def linear_face_poly_iter(H, n, U1, U2):
 
 def linear_face_poly_list(H, n, U1, U2, k):
     '''
-    Compute the face polynomial of a H-circular family, given by the following
+    Compute the face polynomial of a H-linear family, given by the following
     parameters:
 
     - pair H and n (number of vertices)
@@ -349,13 +348,57 @@ def linear_face_poly_list(H, n, U1, U2, k):
     return accu
 
 
+def linear_capped_face_poly_iter(H, n, U1, U2, lcap, nl, Ul, rcap, nr, Ur):
+    '''
+    An iterator that compute the face polynomial of a H-linear family that is
+    capped on the left and on the right, given by the following parameters:
+
+    - pair H and n (number of vertices),
+    - U1 and U2 as gluing (from U1 to U2),
+    - caps on left (lcap, nl, Ul) and on right (rcap, nr, Ur).
+    
+    Note that the cap on the left (resp. right) is fusioned with U2 (resp. U1).
+    '''
+    # some sanity checks
+    # same size and no intersection
+    if len(U1) != len(U2) or len(set(U1 + U2)) != len(U1) * 2:
+        raise ValueError('Specification of gluing incorrect')
+    if len(U1) != len(Ul) or len(U1) != len(Ur):
+        raise ValueError('Specification of caps incorrect')
+    # compute the elementary brick of blowup of H
+    blowupH, vblowupH = compute_face_element_proj(H, n, U1 + U2)
+    vU1, vU2 = vblowupH[:len(U1)], vblowupH[len(U1):]
+    # compute the blowup of caps
+    blowupL, vblowupL = compute_face_element_proj(lcap, nl, Ul)
+    blowupR, vblowupR = compute_face_element_proj(rcap, nr, Ur)
+    # start iteration
+    curG, curU1, curU2 = blowupH, vU1, vU2
+    yield 1
+    # take the caps
+    capG, ddictG, _ = vertex_amalgamation(curG, blowupL, curU2, vblowupL)
+    newU1 = [[ddictG[n] for n in node] for node in curU1]
+    capG, _, _ = vertex_amalgamation(capG, blowupR, newU1, vblowupR)
+    yield capG[SymmetricGroup([])()]
+    while True:
+        # do amalgamation
+        curG, ddictG, ddictH = vertex_amalgamation(curG, blowupH, curU1, vU2)
+        # rename darts using the dictionary
+        curU2 = [[ddictG[n] for n in node] for node in curU2]
+        curU1 = [[ddictH[n] for n in node] for node in vU1]
+        # take the caps
+        capG, ddictG, _ = vertex_amalgamation(curG, blowupL, curU2, vblowupL)
+        newU1 = [[ddictG[n] for n in node] for node in curU1]
+        capG, _, _ = vertex_amalgamation(capG, blowupR, newU1, vblowupR)
+        yield capG[SymmetricGroup([])()]
+    return
+
+
 def circular_face_poly_iter(H, n, U1, U2):
     '''
     An iterator that computes the face polynomial of a H-circular family, given
     by the following parameters:
 
     - pair H and n (number of vertices)
-    - k as number of repetitions of the same pattern
     - U1 and U2 as gluing (from U1 to U2)
     '''
     # some sanity checks
@@ -608,7 +651,7 @@ def fast_pade(polylistmod, deg_estimate, degnumer, degdenom, PSeries):
     return numerpoly, denompoly
 
 
-def pade_heuristic(H, n, U1, U2, polyiter):
+def pade_heuristic(polyiter):
     '''
     Compute the face generating function of the H-circular or H-linear family
     using Padé's approximation, depending on the iterator given.
@@ -620,29 +663,36 @@ def pade_heuristic(H, n, U1, U2, polyiter):
     - Then we perform the Padé approximation using the CRT, because it is much
       faster:
         - We add a prime modulo and compute the Padé approximation;
-            - Here we use the `fast_pade` function that uses Lagrange
+            - Here we use the ``fast_pade`` function that uses Lagrange
               interpolation to accelerate.
         - We use CRT to compute the coefficients of the numerator and the
           denominator;
         - We iterate until the coefficients stablize.
+     
+     INPUT:
+     
+     - ``H`` -- the graph H, expressed as list of edges
+     - ``n`` -- the number of vertices in H
+     - ``U1``, ``U2`` -- the gluing
+     - ``polyiter`` -- an iterator that gives out a sequence of face polynomials
     '''
     deg_estimate = 8
     deg_increment = 1
     GAPLEN = 2
     polylist = []
-    polyiter = polyiter(H, n, U1, U2)  # we use a lazy way to avoid recomputing
     starttime = time.time()
+    printint = 60  # minimal interval between prints
     print('Estimation phase')
     while True:
         # compute the first terms of the gf
         polytime = time.time()  # time spent on computing terms of series
+        printtime = time.time()  # time of last print
         while len(polylist) <= deg_estimate * 2 + GAPLEN:
             polylist.append(next(polyiter))
-            if len(polylist) < 21:
+            if len(polylist) < 21 and (time.time() - printtime) > printint:
                 print(f'Series terms count: {len(polylist)}, '
                       f'time elapsed {time.time() - starttime}')
-        print(f'Series terms count: {len(polylist)}, '
-              f'time elapsed {time.time() - starttime}')
+                printtime = time.time()
         polytime = time.time() - polytime
         # do the modulo reduction
         p = random_prime(2 ** 62, lbound=2 ** 61)
@@ -754,48 +804,34 @@ def pade_heuristic_linear(H, n, U1, U2):
     '''
     Compute the face generating function of the H-linear family.
 
-    A thin wrapper of `pade_heuristic`
+    A thin wrapper of ``pade_heuristic``
     '''
-    return pade_heuristic(H, n, U1, U2, linear_face_poly_iter)
+    return pade_heuristic(linear_face_poly_iter(H, n, U1, U2))
 
 
 def pade_heuristic_circular(H, n, U1, U2):
     '''
     Compute the face generating function of the H-circular family.
 
-    A thin wrapper of `pade_heuristic`
+    A thin wrapper of ``pade_heuristic``
     '''
-    return pade_heuristic(H, n, U1, U2, circular_face_poly_iter)
+    return pade_heuristic(circular_face_poly_iter(H, n, U1, U2))
 
 
-def H_family_genus_gf(H, n, U1, U2, ftype, algorithm='pade'):
+def pade_heuristic_linear_capped(H, n, U1, U2, lcap, nl, Ul, rcap, nr, Ur):
     '''
-    Returns the H-linear or the H-circular genus generating function of the
-    given graph and gluing.
+    Compute the face generating function of the capped H-linear family.
 
-    The gluing is given by identifying each pair of vertices in `U1` and `U2`
-    with the same length.
+    A thin wrapper of ``pade_heuristic``
+    '''
+    return pade_heuristic(linear_capped_face_poly_iter(H, n, U1, U2,
+                                                       lcap, nl, Ul,
+                                                       rcap, nr, Ur))
 
-    We offer two algorithms:
 
-    - 'pade', which computes the first terms and then do optimized Padé's
-      approximation for the generating function.
-    - 'det', which computes the denominator explicitly, then use the first
-      terms for the numerator.
-
-    Both algorithms contains some heuristics, but 'det' assumes less and thus
-    more reliable, while also taking more time.
-
-    INPUT:
-
-    - `H`: The graph given as a list of edges (pairs of integers from 0 to
-      `n` - 1)
-    - `n`: The number of vertices. The vertices are presented as numbers from 0
-      to `n` - 1.
-    - `U1`: A list of vertices
-    - `U2`: A list of vertices of the same length as `U1`.
-    - `algorithm`: The algorithm to use, either 'pade' by default for using
-      Padé's approximation, or 'det' with the determinant
+def face_gf_to_genus_gf(numer, denom, exH, extrapow):
+    '''
+    Converts face generating function to genus generating function of H-families
     '''
     def half_power(poly):
         accu = 0
@@ -811,11 +847,61 @@ def H_family_genus_gf(H, n, U1, U2, ftype, algorithm='pade'):
             accu += tt ** tpow * xaccu
         return accu
 
-    edgecnt = len(H)
-    Ucnt = len(U1)
+    # first we work with x^{1/2} to avoid fractional powers
+    # Laurent polynomials are needed to express negative coefficients
+    LRx = LaurentPolynomialRing(ZZ, x)
+    PolyLRtx = PolynomialRing(Rx, t)
+    FracLRtx = PolyLRtx.fraction_field()
+    numer, denom = PolyLRtx(numer), PolyLRtx(denom)
+    numer = numer.substitute(x=1 / LRx(x), t=t * x ** exH)
+    numer *= LRx(x) ** (2 + extrapow)
+    denom = denom.substitute(x=1 / LRx(x), t=t * x ** exH)
+    res = FracLRtx(numer) / FracLRtx(denom)
+    numer, denom = res.numerator(), res.denominator()
+    # maybe there are negative powers
+    minval_numer = min(poly.valuation() for poly in numer.coefficients())
+    minval_denom = min(poly.valuation() for poly in denom.coefficients())
+    minval = min(minval_numer, minval_denom)
+    numer *= x ** (-minval)
+    denom *= x ** (-minval)
+    numer, denom = Polytx(numer), Polytx(denom)
+    # now powers in x are positive, but we cannot half the power in general
+    # ugly hack
+    return half_power(numer), half_power(denom)
+
+
+def H_family_genus_gf(H, n, U1, U2, ftype, algorithm='pade'):
+    '''
+    Returns the H-linear or the H-circular genus generating function of the
+    given graph and gluing.
+
+    The gluing is given by identifying each pair of vertices in ``U1`` and ``U2``
+    with the same length.
+
+    We offer two algorithms:
+
+    - 'pade', which computes the first terms and then do optimized Padé's
+      approximation for the generating function.
+    - 'det', which computes the denominator explicitly, then use the first
+      terms for the numerator.
+
+    Both algorithms contains some heuristics, but 'det' assumes less and thus
+    more reliable, while also taking more time.
+
+    INPUT:
+
+    - ``H`` -- The graph given as a list of edges (pairs of integers from 0 to
+      ``n`` - 1)
+    - ``n`` -- The number of vertices. The vertices are presented as numbers
+      from 0 to ``n`` - 1.
+    - ``U1`` -- A list of vertices
+    - ``U2`` -- A list of vertices of the same length as ``U1``.
+    - ``algorithm`` -- The algorithm to use, either 'pade' by default for using
+      Padé's approximation, or 'det' with the determinant
+    '''
     numer, denom, extrapow = 0, 0, 0
     if ftype == 'linear':
-        extrapow = -Ucnt
+        extrapow = -len(U1)
         if algorithm == 'pade':
             numer, denom = pade_heuristic_linear(H, n, U1, U2)
         elif algorithm == 'det':
@@ -834,34 +920,14 @@ def H_family_genus_gf(H, n, U1, U2, ftype, algorithm='pade'):
             raise ValueError('Invalid algorithm')
     else:
         raise ValueError('Invalid family type')
-    # first we work with x^{1/2} to avoid fractional powers
-    # Laurent polynomials are needed to express negative coefficients
-    LRx = LaurentPolynomialRing(ZZ, x)
-    PolyLRtx = PolynomialRing(Rx, t)
-    FracLRtx = PolyLRtx.fraction_field()
-    numer, denom = PolyLRtx(numer), PolyLRtx(denom)
-    numer = numer.substitute(x=1 / LRx(x), t=t * x ** (edgecnt - n + Ucnt))
-    numer *= LRx(x) ** (2 + extrapow)
-    denom = denom.substitute(x=1 / LRx(x), t=t * x ** (edgecnt - n + Ucnt))
-    res = FracLRtx(numer) / FracLRtx(denom)
-    numer, denom = res.numerator(), res.denominator()
-    # maybe there are negative powers
-    minval_numer = min(poly.valuation() for poly in numer.coefficients())
-    minval_denom = min(poly.valuation() for poly in denom.coefficients())
-    minval = min(minval_numer, minval_denom)
-    numer *= x ** (-minval)
-    denom *= x ** (-minval)
-    numer, denom = Polytx(numer), Polytx(denom)
-    # now powers in x are positive, but we cannot half the power in general
-    # ugly hack
-    return half_power(numer), half_power(denom)
+    return face_gf_to_genus_gf(numer, denom, len(H) - n + len(U1), extrapow)
 
 
 def H_linear_genus_gf(H, n, U1, U2, algorithm='pade'):
     '''
     Returns H-linear genus generating function of the given graph and gluing.
 
-    A thin wrapper of `H_family_genus_gf`.
+    A thin wrapper of ``H_family_genus_gf``.
     '''
     return H_family_genus_gf(H, n, U1, U2, 'linear', algorithm)
 
@@ -870,6 +936,34 @@ def H_circular_genus_gf(H, n, U1, U2, algorithm='pade'):
     '''
     Returns H-circular genus generating function of the given graph and gluing.
 
-    A thin wrapper of `H_family_genus_gf`.
+    A thin wrapper of ``H_family_genus_gf``.
     '''
     return H_family_genus_gf(H, n, U1, U2, 'circular', algorithm)
+
+
+def capped_H_linear_genus_gf(H, n, U1, U2, lcap, nl, Ul, rcap, nr, Ur):
+    '''
+    Returns the capped H-linear genus generating function of the given graph,
+    gluing and caps, using Padé's approximation algorithm.
+
+    The gluing is given by identifying each pair of vertices in ``U1`` and
+    ``U2`` with the same length.
+
+    INPUT:
+
+    - ``H`` -- The graph given as a list of edges (pairs of integers from 0 to
+      ``n`` - 1)
+    - ``n`` -- The number of vertices. The vertices are presented as numbers
+      from 0 to ``n`` - 1.
+    - ``U1`` -- A list of vertices
+    - ``U2`` -- A list of vertices of the same length as ``U1``.
+    - ``lcap``, ``rcap`` -- The capping graph on the left (thus with ``U2``) and
+    on the right (thus with ``U1``) given as list of edges
+    - ``nl``, ``nr`` -- The number of vertices in left and right caps
+    - ``Ul``, ``Ur`` -- The list of vertices in the left and right caps to be
+    fusioned with ``U2`` and ``U1`` respectively.
+    '''
+    numer, denom = pade_heuristic_linear_capped(H, n, U1, U2, lcap, nl, Ul,
+                                                rcap, nr, Ur)
+    extrapow = len(U1) + len(lcap) + len(rcap) - nl - nr
+    return face_gf_to_genus_gf(numer, denom, len(H) - n + len(U1), extrapow)
