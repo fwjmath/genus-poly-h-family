@@ -356,7 +356,7 @@ def linear_capped_face_poly_iter(H, n, U1, U2, lcap, nl, Ul, rcap, nr, Ur):
     - pair H and n (number of vertices),
     - U1 and U2 as gluing (from U1 to U2),
     - caps on left (lcap, nl, Ul) and on right (rcap, nr, Ur).
-    
+
     Note that the cap on the left (resp. right) is fusioned with U2 (resp. U1).
     '''
     # some sanity checks
@@ -668,9 +668,9 @@ def pade_heuristic(polyiter):
         - We use CRT to compute the coefficients of the numerator and the
           denominator;
         - We iterate until the coefficients stablize.
-     
+
      INPUT:
-     
+
      - ``H`` -- the graph H, expressed as list of edges
      - ``n`` -- the number of vertices in H
      - ``U1``, ``U2`` -- the gluing
@@ -697,7 +697,6 @@ def pade_heuristic(polyiter):
         # do the modulo reduction
         p = random_prime(2 ** 62, lbound=2 ** 61)
         PPoly = PolynomialRing(FiniteField_prime_modn(p), x)
-        PFrac = PolynomialRing(PPoly, t).fraction_field()
         PSeries = PowerSeriesRing(PPoly, t)
         polylistmod = [PPoly(e) for e in polylist]
         # pade for the modulo
@@ -752,7 +751,6 @@ def pade_heuristic(polyiter):
         pprod = symbolic_prod(plist)
         pprodx = symbolic_prod(plist[:-1])
         PPoly = PolynomialRing(FiniteField_prime_modn(p), x)
-        PFrac = PolynomialRing(PPoly, t).fraction_field()
         PSeries = PowerSeriesRing(PPoly, t)
         polylistmod = [PPoly(e) for e in polylist]
         pademod = fast_pade(polylistmod, deg_estimate, degnumer, degdenom,
